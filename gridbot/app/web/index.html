@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GridBot — спотовый грид-бот</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">GridBot</div>
+  <div class="ticker">
+    <span id="hdr-symbol">—</span>
+    <span id="hdr-price" class="price">—</span>
+  </div>
+  <div id="status-badge" class="badge badge-stopped">Остановлен</div>
+  <div id="mode-banner" class="paper-banner">
+    Режим paper: реальные ордера на биржу не выставляются
+  </div>
+</header>
+
+<div id="nocore" class="nocore" hidden>
+  Нет соединения с ядром приложения — интерфейс работает в режиме просмотра.
+</div>
+
+<main class="layout">
+
+  <aside class="panel settings">
+    <h2>Настройки</h2>
+
+    <div id="restore-box" class="restore" hidden>
+      <div class="restore-text">Найдено сохранённое paper-состояние<span id="restore-symbol"></span>.
+        Продолжить с места остановки?</div>
+      <div class="row two">
+        <button id="btn-resume" class="btn btn-primary" type="button">Продолжить</button>
+        <button id="btn-discard" class="btn" type="button">Начать заново</button>
+      </div>
+    </div>
+
+    <fieldset id="mode-form">
+      <div class="mode-box">
+        <label class="radio"><input type="radio" name="mode" id="mode-paper" checked>
+          Paper (симуляция)</label>
+        <label class="radio"><input type="radio" name="mode" id="mode-live">
+          Live (реальные деньги)</label>
+      </div>
+      <div id="live-net-box" hidden>
+        <label>Сеть
+          <select id="f-network">
+            <option value="testnet" selected>Testnet (по умолчанию)</option>
+            <option value="mainnet">Mainnet (реальная биржа)</option>
+          </select>
+        </label>
+        <details id="keys-box" class="keys">
+          <summary>API-ключи</summary>
+          <div id="keys-status" class="hint">Ключи не сохранены.</div>
+          <label>API Key
+            <input id="f-api-key" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <label>API Secret
+            <input id="f-api-secret" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="row two">
+            <button id="btn-keys-save" class="btn" type="button">Сохранить ключи</button>
+            <button id="btn-keys-test" class="btn" type="button">Проверить подключение</button>
+          </div>
+          <button id="btn-keys-clear" class="btn btn-wide" type="button">Удалить ключи</button>
+          <div id="keys-info" class="hint"></div>
+        </details>
+      </div>
+    </fieldset>
+
+    <fieldset id="cfg-form">
+      <div id="symbol-chips" class="chips">
+        <button class="chip" data-symbol="BTCUSDT" type="button">BTC</button>
+        <button class="chip" data-symbol="ETHUSDT" type="button">ETH</button>
+        <button class="chip" data-symbol="SOLUSDT" type="button">SOL</button>
+        <button class="chip" data-symbol="BNBUSDT" type="button">BNB</button>
+        <button class="chip" data-symbol="XRPUSDT" type="button">XRP</button>
+        <button class="chip" data-symbol="DOGEUSDT" type="button">DOGE</button>
+        <button class="chip" data-symbol="TONUSDT" type="button">TON</button>
+        <button class="chip" data-symbol="ADAUSDT" type="button">ADA</button>
+      </div>
+      <label>Пара (символ)
+        <input id="f-symbol" type="text" value="BTCUSDT" autocomplete="off" spellcheck="false" list="symbols-list">
+      </label>
+      <datalist id="symbols-list"></datalist>
+      <div class="grid-mode-box">
+        <span class="grid-mode-label">Сетка:</span>
+        <label class="radio"><input type="radio" name="gridmode" id="gm-manual" checked>
+          Диапазон вручную</label>
+        <label class="radio"><input type="radio" name="gridmode" id="gm-step">
+          От цены + шаг</label>
+      </div>
+      <div id="bounds-row" class="row two">
+        <label>Нижняя граница
+          <input id="f-lower" type="text" inputmode="decimal" placeholder="напр. 70000">
+        </label>
+        <label>Верхняя граница
+          <input id="f-upper" type="text" inputmode="decimal" placeholder="напр. 110000">
+        </label>
+      </div>
+      <div id="step-row" hidden>
+        <label>Шаг между уровнями, %
+          <input id="f-step" type="text" inputmode="decimal" value="0.5">
+        </label>
+        <div id="step-hint" class="hint"></div>
+      </div>
+      <div class="row two">
+        <label>Уровни
+          <input id="f-levels" type="text" inputmode="numeric" value="20">
+        </label>
+        <label>Шаг
+          <select id="f-spacing">
+            <option value="arithmetic">Арифметический</option>
+            <option value="geometric">Геометрический</option>
+          </select>
+        </label>
+      </div>
+      <div class="row two">
+        <label>Бюджет, USDT
+          <input id="f-budget" type="text" inputmode="decimal" value="1000">
+        </label>
+        <label>Комиссия, %
+          <input id="f-fee" type="text" inputmode="decimal" value="0.1">
+        </label>
+      </div>
+      <label class="half">Опрос, сек
+        <input id="f-poll" type="text" inputmode="decimal" value="10">
+      </label>
+
+      <div class="row two">
+        <button id="btn-price" class="btn" type="button">Цена сейчас</button>
+        <button id="btn-range" class="btn" type="button">Подобрать диапазон</button>
+      </div>
+      <div id="market-info" class="hint"></div>
+      <button id="btn-backtest" class="btn btn-wide" type="button">Бэктест 60 дней</button>
+    </fieldset>
+
+    <div class="row two run-row">
+      <button id="btn-start" class="btn btn-start" type="button">&#9654; Старт (paper)</button>
+      <button id="btn-stop" class="btn btn-stop" type="button" disabled>&#9632; Стоп</button>
+    </div>
+
+    <div id="form-error" class="error" hidden></div>
+  </aside>
+
+  <section class="content">
+    <div class="cards">
+      <div class="card"><div class="card-label">Капитал</div><div id="m-equity" class="card-value">—</div></div>
+      <div class="card"><div class="card-label">Реализованный PnL</div><div id="m-realized" class="card-value">—</div></div>
+      <div class="card"><div class="card-label">Нереализованный PnL</div><div id="m-unrealized" class="card-value">—</div></div>
+      <div class="card"><div class="card-label">Комиссии</div><div id="m-fees" class="card-value">—</div></div>
+      <div class="card"><div class="card-label">Круги buy&#8594;sell</div><div id="m-trips" class="card-value">—</div></div>
+      <div class="card"><div class="card-label">Кэш / Монета</div><div id="m-balance" class="card-value small">—</div></div>
+      <div class="card" id="card-exch" hidden><div class="card-label">Баланс биржи</div><div id="m-exch" class="card-value small">—</div></div>
+    </div>
+
+    <div class="panel chart-panel">
+      <div class="chart-toolbar">
+        <button class="int-btn active" data-interval="1m" type="button">1м</button>
+        <button class="int-btn" data-interval="5m" type="button">5м</button>
+        <button class="int-btn" data-interval="15m" type="button">15м</button>
+        <button class="int-btn" data-interval="1h" type="button">1ч</button>
+      </div>
+      <div id="chart" class="chart-host">
+        <div id="chart-empty" class="chart-empty">Нет данных о цене</div>
+      </div>
+      <div class="chart-attrib" title="&copy; TradingView, Inc.">График — TradingView Lightweight Charts&trade;</div>
+    </div>
+
+    <div class="bottom">
+      <div class="panel fills-panel">
+        <h3>Последние исполнения</h3>
+        <div class="table-wrap">
+          <table id="fills">
+            <thead><tr><th>Время</th><th>Сторона</th><th>Цена</th><th>Кол-во</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="fills-empty" class="hint">Исполнений пока нет.</div>
+        </div>
+      </div>
+      <details class="panel log-panel">
+        <summary>Журнал</summary>
+        <pre id="log"></pre>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+<div id="modal-overlay" class="overlay" hidden>
+  <div class="modal panel">
+    <h3>Результат бэктеста <span id="bt-symbol"></span></h3>
+    <div id="bt-warning" class="warn" hidden></div>
+    <div id="bt-metrics" class="bt-grid"></div>
+    <div class="legend">
+      <span class="lg lg-grid">&#8212; Сетка</span>
+      <span class="lg lg-bh">&#8212; Buy &amp; Hold</span>
+    </div>
+    <div id="bt-chart"></div>
+    <button id="btn-modal-close" class="btn btn-wide" type="button">Закрыть</button>
+  </div>
+</div>
+
+<div id="live-overlay" class="overlay" hidden>
+  <div class="modal panel live-modal">
+    <h3>Запуск LIVE на реальные деньги</h3>
+    <div class="danger">
+      <p><b>Вы запускаете торговлю НАСТОЯЩИМИ деньгами на Binance (mainnet).</b></p>
+      <ul>
+        <li>Сетка зарабатывает только в боковике. В устойчивом тренде вниз бот
+          <b>накапливает убыток</b>: каждый пробитый уровень — ещё одна покупка
+          дешевеющего актива.</li>
+        <li>API-ключи должны быть <b>БЕЗ права вывода средств</b>
+          (только чтение + спот-торговля).</li>
+        <li>Начинайте с малого бюджета, который не жалко потерять.</li>
+      </ul>
+    </div>
+    <label>Введите название пары для подтверждения (<span id="live-confirm-symbol"></span>)
+      <input id="f-live-confirm" type="text" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="row two">
+      <button id="btn-live-go" class="btn btn-stop" type="button">Запустить LIVE</button>
+      <button id="btn-live-cancel" class="btn" type="button">Отмена</button>
+    </div>
+    <div id="live-modal-error" class="error" hidden></div>
+  </div>
+</div>
+
+<div id="stop-overlay" class="overlay" hidden>
+  <div class="modal panel">
+    <h3>Остановка live-режима</h3>
+    <label class="check">
+      <input id="f-stop-cancel" type="checkbox" checked>
+      Отменить ордера на бирже
+    </label>
+    <div class="hint">Если снять галочку, лимитные ордера останутся на бирже
+      и продолжат исполняться без бота. При следующем запуске бот сверится
+      с биржей и продолжит с места остановки.</div>
+    <div class="row two">
+      <button id="btn-stop-confirm" class="btn btn-stop" type="button">Остановить</button>
+      <button id="btn-stop-abort" class="btn" type="button">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+data_cache/
+logs/
+state/
+reports/
+__pycache__/
