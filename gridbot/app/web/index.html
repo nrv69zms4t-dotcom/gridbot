@@ -87,6 +87,20 @@
       </label>
       <datalist id="symbols-list"></datalist>
       <div class="grid-mode-box">
+        <span class="grid-mode-label">Логика сетки:</span>
+        <label class="radio"><input type="radio" name="gridlogic" id="gl-classic" checked>
+          Классика (пары buy&#8596;sell)</label>
+        <label class="radio"><input type="radio" name="gridlogic" id="gl-tp">
+          Buy-сетка + TP (RR)</label>
+      </div>
+      <div id="rr-row" hidden>
+        <label>TP, шагов (RR)
+          <input id="f-rr" type="number" inputmode="decimal" value="3" min="0.5" max="50" step="0.5">
+        </label>
+        <div class="hint">Каждая покупка закрывается продажей на
+          RR &#215; шаг выше входа; после TP уровень снова покупает.</div>
+      </div>
+      <div class="grid-mode-box">
         <span class="grid-mode-label">Сетка:</span>
         <label class="radio"><input type="radio" name="gridmode" id="gm-manual" checked>
           Диапазон вручную</label>

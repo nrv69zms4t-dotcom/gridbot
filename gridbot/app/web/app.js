@@ -192,9 +192,27 @@ function applyConfig(c) {
   if (c.step_pct != null) $('#f-step').value = c.step_pct;
   $('#gm-step').checked = c.grid_mode === 'step';
   $('#gm-manual').checked = c.grid_mode !== 'step';
+  /* логика сетки (старые config.json без этих полей = классика) */
+  if (c.rr != null) $('#f-rr').value = c.rr;
+  $('#gl-tp').checked = c.logic === 'tp';
+  $('#gl-classic').checked = c.logic !== 'tp';
   updateGridModeUi();
+  updateGridLogicUi();
   updateChips();
 }
+
+/* ------------------------------------------------------ grid logic (tp) */
+
+function currentGridLogic() {
+  return $('#gl-tp').checked ? 'tp' : 'classic';
+}
+
+function updateGridLogicUi() {
+  $('#rr-row').hidden = currentGridLogic() !== 'tp';
+}
+
+$('#gl-classic').addEventListener('change', updateGridLogicUi);
+$('#gl-tp').addEventListener('change', updateGridLogicUi);
 
 /* ------------------------------------------------------- grid mode (step) */
 
@@ -220,7 +238,7 @@ function prepareRange(then) {
   var cfg = readCfg();
   guard(function () {
     return api.compute_range(cfg.symbol, cfg.step_pct, cfg.levels,
-                             cfg.spacing).then(function (r) {
+                             cfg.spacing, cfg.logic).then(function (r) {
       if (!r.ok) { showError(r.error); return; }
       $('#f-lower').value = r.lower;
       $('#f-upper').value = r.upper;
@@ -290,7 +308,9 @@ function readCfg() {
     fee: feePct == null ? null : feePct / 100,
     poll: numVal('#f-poll'),
     grid_mode: currentGridMode(),
-    step_pct: numVal('#f-step')
+    step_pct: numVal('#f-step'),
+    logic: currentGridLogic(),
+    rr: numVal('#f-rr')
   };
 }
 

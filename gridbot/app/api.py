@@ -46,7 +46,13 @@ DEFAULT_CONFIG = {
     "poll": 10.0,          # seconds
     "grid_mode": "manual",  # "manual" (lower/upper) | "step" (price+step)
     "step_pct": 0.5,       # level step in % for grid_mode == "step"
+    "logic": "classic",    # "classic" (pairs) | "tp" (buy-ladder + TP/RR)
+    "rr": 3.0,             # logic == "tp": TP distance in grid steps
 }
+
+# --- "tp" grid logic (RR bounds mirror GridConfig.tp_mult validation) ---
+RR_MIN = 0.5
+RR_MAX = 50.0
 
 BACKTEST_DAYS = 60
 SUGGEST_DAYS = 30
@@ -344,15 +350,27 @@ class Api:
         if poll is None or poll < 1.0:
             return None, 0.0, ("Интервал опроса должен быть числом "
                                "не меньше 1 секунды.")
+        logic = str(cfg.get("logic", DEFAULT_CONFIG["logic"]) or "classic")
+        if logic not in ("classic", "tp"):
+            return None, 0.0, ("Логика сетки: выберите классическую или "
+                               "buy-сетку с TP (RR).")
+        rr = _num(cfg.get("rr", DEFAULT_CONFIG["rr"]))
+        if logic == "tp" and (rr is None or not (RR_MIN <= rr <= RR_MAX)):
+            return None, 0.0, (f"RR должен быть от {RR_MIN:g} до "
+                               f"{RR_MAX:g} шагов сетки.")
         try:
             gc = GridConfig(
                 symbol=symbol, lower_price=lower, upper_price=upper,
                 n_levels=levels, spacing=spacing, quote_budget=budget,
                 fee_rate=fee, min_notional=filters.min_notional,
-                qty_step=filters.qty_step, price_step=filters.price_step)
+                qty_step=filters.qty_step, price_step=filters.price_step,
+                logic=logic, tp_mult=(rr if logic == "tp" else 1.0))
             GridEngine(gc)  # validates min_notional and level spacing
         except ValueError as exc:
             msg = str(exc)
+            if "tp_mult" in msg:  # defensive: pre-validated above
+                return None, 0.0, (f"RR должен быть от {RR_MIN:g} до "
+                                   f"{RR_MAX:g} шагов сетки.")
             if "min_notional" in msg:
                 return None, 0.0, (
                     "Бюджет слишком мал для такого числа уровней: объём на "
@@ -495,18 +513,30 @@ class Api:
                         f"интернет-соединение.{_net_hint(exc)} "
                         f"(детали: {exc})")
 
-    def compute_range(self, symbol: str, step_pct, levels, spacing) -> dict:
+    def compute_range(self, symbol: str, step_pct, levels, spacing,
+                      logic: str = "classic") -> dict:
         """Grid bounds from the CURRENT price + a per-level step in %.
 
-        arithmetic: ``step_abs = price*step/100``, span = step_abs*(N-1),
-        bounds symmetric around the price.  geometric: ``r = 1+step/100``,
-        ``lower = price / r**((N-1)/2)``, ``upper = price * r**((N-1)/2)``
-        (equal % step between adjacent levels, price at the middle).
+        logic == "classic" (default — the parameter is optional for
+        backward compatibility): bounds symmetric around the price.
+        arithmetic: ``step_abs = price*step/100``, span = step_abs*(N-1).
+        geometric: ``r = 1+step/100``, ``lower = price / r**((N-1)/2)``,
+        ``upper = price * r**((N-1)/2)`` (equal % step between adjacent
+        levels, price at the middle).
+
+        logic == "tp" (buy-ladder + TP): the grid is built DOWN from the
+        current price — arithmetic: ``lower = price - step_abs*N``,
+        ``upper = price``; geometric: ``lower = price / r**N``,
+        ``upper = price``.
         """
         try:
             symbol = str(symbol or "").strip().upper()
             if not symbol:
                 return _err("Укажите торговую пару (символ).")
+            logic = str(logic or "classic")
+            if logic not in ("classic", "tp"):
+                return _err("Логика сетки: выберите классическую или "
+                            "buy-сетку с TP (RR).")
             step = _num(step_pct)
             if step is None or not (STEP_PCT_MIN <= step <= STEP_PCT_MAX):
                 return _err("Шаг между уровнями должен быть числом от "
@@ -531,7 +561,15 @@ class Api:
             if not (math.isfinite(price) and price > 0):
                 return _err("Биржа вернула некорректную цену.")
             step_abs = price * step / 100.0
-            if spacing == "arithmetic":
+            if logic == "tp":
+                # buy-ladder: levels go DOWN from the current price
+                if spacing == "arithmetic":
+                    lower = price - step_abs * n
+                else:
+                    r = 1.0 + step / 100.0
+                    lower = price / r ** n
+                upper = price
+            elif spacing == "arithmetic":
                 span = step_abs * (n - 1)
                 lower = price - span / 2.0
                 upper = price + span / 2.0
@@ -548,7 +586,7 @@ class Api:
                     "lower": _round_sig(lower), "upper": _round_sig(upper),
                     "price": _round_sig(price),
                     "step_abs": _round_sig(step_abs),
-                    "levels": n, "spacing": spacing}
+                    "levels": n, "spacing": spacing, "logic": logic}
         except Exception as exc:
             return _err(f"Не удалось рассчитать диапазон: {exc}")
 
@@ -1151,6 +1189,8 @@ class Api:
                     "balances": None,
                     "symbol": (trader.engine.config.symbol if trader
                                else self._last_symbol),
+                    "logic": (trader.engine.config.logic if trader
+                              else None),
                     "price": self._last_price,
                     "equity": None, "cash": None, "base": None,
                     "realized_pnl": None, "unrealized_pnl": None,

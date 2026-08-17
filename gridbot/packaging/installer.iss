@@ -7,7 +7,7 @@
 ; app installs per-user; with elevation it goes to Program Files.
 
 #define MyAppName "GridBot"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "MaxArti"
 #define MyAppExeName "GridBot.exe"
 

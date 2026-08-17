@@ -490,6 +490,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--budget", type=float, default=100.0)
     p.add_argument("--spacing", choices=["arithmetic", "geometric"],
                    default="arithmetic")
+    p.add_argument("--logic", choices=["classic", "tp"], default="classic",
+                   help="classic: paired buy<->sell levels; tp: buy-ladder "
+                        "where each buy closes at its own TP (see --rr)")
+    p.add_argument("--rr", type=float, default=3.0,
+                   help="tp logic only: TP distance in grid steps "
+                        "(RR, default 3.0)")
     p.add_argument("--fee", type=float, default=0.001)
     p.add_argument("--poll", type=float, default=5.0,
                    help="seconds between order-status polls")
@@ -542,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
         quote_budget=args.budget, fee_rate=args.fee,
         min_notional=filters.min_notional, qty_step=filters.qty_step,
         price_step=filters.price_step,
+        logic=args.logic,
+        tp_mult=args.rr if args.logic == "tp" else 1.0,
     )
     state_file = Path(args.state_file) if args.state_file else (
         STATE_DIR / f"live_{network}_{symbol}.json")

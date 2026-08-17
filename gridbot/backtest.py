@@ -73,6 +73,8 @@ class BacktestReport:
     time_in_range_pct: float
     final_base_inventory: float
     final_cash: float
+    logic: str = "classic"
+    tp_mult: float = 1.0
 
     def summary(self) -> str:
         r = self
@@ -81,6 +83,12 @@ class BacktestReport:
             f"  GRID BACKTEST  {r.symbol}   "
             f"{r.start_time} -> {r.end_time}  ({r.n_candles} candles)",
             "=" * 62,
+        ]
+        # tp mode gets an extra line; classic output stays byte-identical
+        if r.logic == "tp":
+            lines.append(f"  logic              : buy-ladder + TP "
+                         f"(RR={r.tp_mult:g} steps)")
+        lines += [
             f"  start price        : {r.start_price:>14,.4f}",
             f"  final close        : {r.final_close:>14,.4f}",
             f"  initial budget     : {r.initial_budget:>14,.2f}",
@@ -148,6 +156,8 @@ def run_backtest(df: pd.DataFrame, config: GridConfig
         time_in_range_pct=100.0 * in_range / len(df),
         final_base_inventory=snap["base"],
         final_cash=snap["cash"],
+        logic=config.logic,
+        tp_mult=config.tp_mult,
     )
     return report, curve
 
@@ -170,6 +180,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--budget", type=float, default=1000.0)
     p.add_argument("--spacing", choices=["arithmetic", "geometric"],
                    default="arithmetic")
+    p.add_argument("--logic", choices=["classic", "tp"], default="classic",
+                   help="classic: paired buy<->sell levels; tp: buy-ladder "
+                        "where each buy closes at its own TP (see --rr)")
+    p.add_argument("--rr", type=float, default=3.0,
+                   help="tp logic only: TP distance in grid steps "
+                        "(RR, default 3.0)")
     p.add_argument("--fee", type=float, default=0.001)
     p.add_argument("--auto-range", action="store_true",
                    help="derive [lower, upper] from the FIRST part of the "
@@ -228,6 +244,8 @@ def main(argv: list[str] | None = None) -> BacktestReport:
         quote_budget=args.budget, fee_rate=args.fee,
         min_notional=filters.min_notional, qty_step=filters.qty_step,
         price_step=filters.price_step,
+        logic=args.logic,
+        tp_mult=args.rr if args.logic == "tp" else 1.0,
     )
 
     report, curve = run_backtest(df, config)

@@ -2,11 +2,26 @@
 
 Design notes
 ------------
-* Classic static spot grid: N price levels across [lower, upper].
-  At start, BUY limits are placed on every level strictly below the
-  start price P0, SELL limits on every level strictly above P0 (a level
-  exactly equal to P0 is skipped).  Sell levels are funded by an initial
-  base purchase executed at market price P0 (fee modelled).
+* Two grid logics, selected by ``GridConfig.logic``:
+  - ``"classic"`` (default) — static spot grid: N price levels across
+    [lower, upper].  At start, BUY limits are placed on every level
+    strictly below the start price P0, SELL limits on every level
+    strictly above P0 (a level exactly equal to P0 is skipped).  Sell
+    levels are funded by an initial base purchase executed at market
+    price P0 (fee modelled).  Buy at level i pairs a sell at level i+1.
+  - ``"tp"`` — buy-ladder with individual take-profits: at start ONLY
+    BUY limits are placed (every level strictly below P0; levels >= P0
+    stay idle), NO initial market purchase.  A buy filled at level
+    price p spawns a SELL of the same qty at the TP price
+    ``p + tp_mult * step`` (arithmetic spacing) or
+    ``p * ratio ** tp_mult`` (geometric), rounded DOWN to
+    ``price_step`` (conservative: never overstate the harvested step)
+    but never below ``p + price_step``.  The SELL remembers its ORIGIN
+    level index in ``Order.level``; when it fills, the round-trip
+    profit is realized and a fresh BUY is re-armed back at the origin
+    level — a level cycles buy -> tp -> buy -> ...  TP sells may rest
+    at arbitrary non-level prices; orders are id-keyed, so any number
+    of concurrent sells coexist.
 * Each level is allocated an equal slice of ``quote_budget``.  Order
   quantity at a level is sized as ``(slice / (1 + fee_rate)) / price``
   rounded DOWN to ``qty_step`` — the ``(1 + fee_rate)`` headroom
@@ -35,6 +50,10 @@ Design notes
   snapshot reports an out-of-range status.  No trailing / re-centering
   is built; a re-centering module could later wrap the engine (stop it,
   read the snapshot, build a new engine) without touching this file.
+  In tp mode a price ABOVE the range with no open sells means the grid
+  is simply idle (all levels re-armed as buys below); by DESIGN CHOICE
+  this still reports ``out_of_range_above`` — no extra status value,
+  the UI treats it exactly like the classic out-of-range case.
 """
 
 from __future__ import annotations
@@ -46,6 +65,7 @@ from typing import Literal, Optional
 
 Spacing = Literal["arithmetic", "geometric"]
 Side = Literal["BUY", "SELL"]
+Logic = Literal["classic", "tp"]
 
 _EPS = 1e-9
 
@@ -86,6 +106,8 @@ class GridConfig:
     min_notional: float = 5.0        # exchange MIN_NOTIONAL filter
     qty_step: float = 1e-6           # exchange LOT_SIZE stepSize
     price_step: float = 1e-2         # exchange PRICE_FILTER tickSize
+    logic: Logic = "classic"         # "classic" pairs | "tp" buy-ladder
+    tp_mult: float = 1.0             # tp only: TP distance in grid steps
 
     def __post_init__(self) -> None:
         if self.lower_price <= 0 or self.upper_price <= 0:
@@ -100,12 +122,19 @@ class GridConfig:
             raise ValueError("quote_budget must be positive")
         if not (0 <= self.fee_rate < 0.1):
             raise ValueError("fee_rate out of sane range [0, 0.1)")
+        if self.logic not in ("classic", "tp"):
+            raise ValueError(f"unknown logic: {self.logic!r}")
+        # tp_mult only matters (and is only validated) in tp mode
+        if self.logic == "tp" and not (0.5 <= self.tp_mult <= 50.0):
+            raise ValueError("tp_mult (RR) out of range [0.5, 50]")
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "GridConfig":
+        # backward compatible: dicts saved before logic/tp_mult existed
+        # simply omit the keys -> dataclass defaults ("classic", 1.0)
         return cls(**d)
 
 
@@ -138,7 +167,8 @@ class Order:
     side: Side
     price: float
     qty: float
-    level: int                     # index into the level ladder
+    level: int                     # index into the level ladder; for a
+                                   # tp-mode SELL: the ORIGIN buy level
     created_step: int              # candle index at creation (-1 = pre-start)
     basis: Optional[float] = None  # SELL only: acquisition price of the base
 
@@ -179,6 +209,9 @@ class GridEngine:
             for p in self.levels
         ]
         # --- construction-time validation: every level must be tradeable ---
+        # (validates the BUY notionals; in tp mode the TP sell notional is
+        #  always >= the buy notional — same qty at a strictly higher
+        #  price — so no extra sell-side check is needed)
         bad = [
             (i, p, q, p * q)
             for i, (p, q) in enumerate(zip(self.levels, self.level_qtys))
@@ -217,8 +250,12 @@ class GridEngine:
     def start(self, timestamp, price: float) -> dict:
         """Initial placement around P0=``price``.
 
-        Buys on levels < P0, sells on levels > P0 (level == P0 skipped),
-        sell inventory bought at market at P0 with fee modelled.
+        classic: buys on levels < P0, sells on levels > P0 (level == P0
+        skipped), sell inventory bought at market at P0 with fee
+        modelled.  tp: ONLY buys on levels < P0 (levels >= P0 idle), no
+        market purchase — the info dict reports zeros so callers (paper
+        / live start logging, the real market-buy branch) need no
+        special-casing.
         Returns a small info dict about the initial market purchase.
         """
         if self.started:
@@ -226,6 +263,15 @@ class GridEngine:
         self.started = True
         self.start_price = price
         self.last_close = price
+
+        if self.config.logic == "tp":
+            for i, (lvl, qty) in enumerate(zip(self.levels,
+                                               self.level_qtys)):
+                if lvl < price - _EPS:
+                    self._place(Order(self._new_id(), "BUY", lvl, qty,
+                                      i, -1))
+            return {"initial_base": 0.0, "cost": 0.0, "fee": 0.0,
+                    "timestamp": timestamp}
 
         sell_base_needed = 0.0
         for i, (lvl, qty) in enumerate(zip(self.levels, self.level_qtys)):
@@ -335,14 +381,23 @@ class GridEngine:
         self.n_trades += 1
         del self.orders[o.order_id]
 
-        # pair rule: buy at level i -> sell at level i+1 (created this step,
-        # therefore NOT eligible to fill inside the same candle)
-        nxt = o.level + 1
-        if nxt < len(self.levels):
-            self._place(Order(self._new_id(), "SELL", self.levels[nxt],
-                              o.qty, nxt, step, basis=o.price))
-        else:  # top-level buy: nowhere to pair a sell — keep as orphan lot
-            self.orphan_lots.append((o.qty, o.price))
+        if self.config.logic == "tp":
+            # tp rule: every buy gets its own SELL at the TP price,
+            # remembering the ORIGIN level for the later re-arm (created
+            # this step, therefore NOT eligible to fill inside the same
+            # candle — the same conservative rule as classic)
+            self._place(Order(self._new_id(), "SELL",
+                              self._tp_price(o.price), o.qty, o.level,
+                              step, basis=o.price))
+        else:
+            # pair rule: buy at level i -> sell at level i+1 (created this
+            # step, therefore NOT eligible to fill inside the same candle)
+            nxt = o.level + 1
+            if nxt < len(self.levels):
+                self._place(Order(self._new_id(), "SELL", self.levels[nxt],
+                                  o.qty, nxt, step, basis=o.price))
+            else:  # top-level buy: nowhere to pair a sell — orphan lot
+                self.orphan_lots.append((o.qty, o.price))
         return Fill(timestamp, o.order_id, "BUY", o.price, o.qty, fee, o.level)
 
     def _fill_sell(self, o: Order, timestamp, step: int) -> Fill:
@@ -364,12 +419,24 @@ class GridEngine:
         self.realized_pnl += net
         del self.orders[o.order_id]
 
-        # pair rule: sell at level j -> buy at level j-1 (occupancy-checked:
-        # at most one open BUY per level, so cash can never be over-committed)
-        prv = o.level - 1
-        if prv >= 0 and not self._has_open(prv, "BUY"):
-            self._place(Order(self._new_id(), "BUY", self.levels[prv],
-                              self.level_qtys[prv], prv, step))
+        if self.config.logic == "tp":
+            # re-arm rule: the TP sell carries its ORIGIN level in
+            # ``o.level`` — place a fresh BUY back there (qty is the
+            # standard per-level allocation; occupancy-checked like
+            # classic, so at most one open BUY per level and cash can
+            # never be over-committed)
+            if not self._has_open(o.level, "BUY"):
+                self._place(Order(self._new_id(), "BUY",
+                                  self.levels[o.level],
+                                  self.level_qtys[o.level], o.level, step))
+        else:
+            # pair rule: sell at level j -> buy at level j-1 (occupancy-
+            # checked: at most one open BUY per level, so cash can never
+            # be over-committed)
+            prv = o.level - 1
+            if prv >= 0 and not self._has_open(prv, "BUY"):
+                self._place(Order(self._new_id(), "BUY", self.levels[prv],
+                                  self.level_qtys[prv], prv, step))
         return Fill(timestamp, o.order_id, "SELL", o.price, o.qty, fee,
                     o.level, realized_net=net)
 
@@ -386,6 +453,33 @@ class GridEngine:
     def _has_open(self, level: int, side: Side) -> bool:
         return any(o.level == level and o.side == side
                    for o in self.orders.values())
+
+    def _tp_price(self, buy_price: float) -> float:
+        """tp mode: TP sell price for a buy filled at ``buy_price``.
+
+        ``tp_mult`` grid steps above the entry: arithmetic spacing adds
+        ``tp_mult * step_abs`` (the nominal level step), geometric
+        multiplies by ``ratio ** tp_mult``.  Rounded DOWN to
+        ``price_step`` — conservative: the modelled profit never
+        overstates what the rounded exchange price can deliver — but
+        never below ``buy_price + price_step`` (a TP must sit at least
+        one tick above the entry).
+        """
+        cfg = self.config
+        if cfg.spacing == "arithmetic":
+            step_abs = (cfg.upper_price - cfg.lower_price) \
+                / (cfg.n_levels - 1)
+            raw = buy_price + cfg.tp_mult * step_abs
+        else:  # geometric
+            ratio = (cfg.upper_price / cfg.lower_price) \
+                ** (1.0 / (cfg.n_levels - 1))
+            raw = buy_price * ratio ** cfg.tp_mult
+        if cfg.price_step <= 0:
+            return raw
+        tp = round_step(raw, cfg.price_step, "floor")
+        min_tp = round_step(buy_price + cfg.price_step,
+                            cfg.price_step, "nearest")
+        return max(tp, min_tp)
 
     # ------------------------------------------------------------------ views
 
@@ -405,6 +499,9 @@ class GridEngine:
         return self.cash + self.base * (px if px is not None else 0.0)
 
     def status(self, close: Optional[float] = None) -> str:
+        # tp mode above the range with no open sells is merely idle;
+        # by design it is still reported as out_of_range_above (see the
+        # module docstring) so the UI semantics stay identical.
         px = self.last_close if close is None else close
         if not self.started or px is None:
             return "inactive"
@@ -419,6 +516,7 @@ class GridEngine:
         px = self.last_close if close is None else close
         return {
             "close": px,
+            "logic": self.config.logic,
             "cash": self.cash,
             "base": self.base,
             "equity": self.equity(px),
